@@ -7,7 +7,7 @@ import {Root} from '../resources'
 
 describe('API Root', () => {
 
-  let api: request.SuperTest;
+  let api: request.SuperTest<request.Test>;
 
   before(() => {
     api = request(`http://localhost:${ApiServer.Port}`);
@@ -23,7 +23,7 @@ describe('API Root', () => {
     let response: Root.TopLevelDocument;
 
     before(async () => {
-      
+
       await api.get('/')
         .end()
         .then((res) => {
@@ -69,9 +69,9 @@ describe('API Root', () => {
     it('should return the attendees link', () => {
       assert.strictEqual(response.links.attendees.href, '/attendees');
     });
-    
+
   });
-  
+
   describe('OPTIONS root document', () => {
 
     let statusCode: number;
@@ -111,7 +111,7 @@ describe('API Root', () => {
     it('should return no body', () => {
       assert.strictEqual(response, '');
     });
-    
+
   });
 
 });

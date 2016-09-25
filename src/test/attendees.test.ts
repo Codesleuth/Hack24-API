@@ -9,7 +9,7 @@ import {JSONApi, AttendeeResource, AttendeesResource} from '../resources'
 
 describe('Attendees resource', () => {
 
-  let api: request.SuperTest;
+  let api: request.SuperTest<request.Test>;
 
   before(() => {
     api = request(`http://localhost:${ApiServer.Port}`);
@@ -24,7 +24,7 @@ describe('Attendees resource', () => {
 
     before(async () => {
       attendee = await MongoDB.Attendees.insertRandomAttendee();
-      
+
       await api.get(`/attendees/${encodeURIComponent(attendee.attendeeid)}`)
         .auth(ApiServer.AdminUsername, ApiServer.AdminPassword)
         .end()
@@ -70,7 +70,7 @@ describe('Attendees resource', () => {
 
     before(async () => {
       attendee = MongoDB.Attendees.createRandomAttendee();
-      
+
       await api.get(`/attendees/${encodeURIComponent(attendee.attendeeid)}`)
         .auth('joe', 'blogs')
         .end()
@@ -112,7 +112,7 @@ describe('Attendees resource', () => {
 
     before(async () => {
       attendee = MongoDB.Attendees.createRandomAttendee();
-      
+
       let requestDoc: AttendeeResource.TopLevelDocument = {
         data: {
           type: 'attendees',
@@ -170,7 +170,7 @@ describe('Attendees resource', () => {
 
     before(async () => {
       attendee = MongoDB.Attendees.createRandomAttendee();
-      
+
       let requestDoc: AttendeeResource.TopLevelDocument = {
         data: {
           type: 'attendees',
@@ -186,7 +186,7 @@ describe('Attendees resource', () => {
           statusCode = res.status;
           contentType = res.header['content-type'];
           response = res.body;
-          
+
           createdAttendee = await MongoDB.Attendees.findbyAttendeeId(attendee.attendeeid);
         });
     });
@@ -225,7 +225,7 @@ describe('Attendees resource', () => {
 
     before(async () => {
       attendee = await MongoDB.Attendees.insertRandomAttendee();
-      
+
       let requestDoc: AttendeeResource.TopLevelDocument = {
         data: {
           type: 'attendees',
@@ -264,7 +264,7 @@ describe('Attendees resource', () => {
     });
 
   });
-  
+
   describe('GET attendees', () => {
 
     let attendee: IAttendee;
@@ -275,10 +275,10 @@ describe('Attendees resource', () => {
 
     before(async () => {
       await MongoDB.Attendees.removeAll();
-      
+
       attendee = await MongoDB.Attendees.insertRandomAttendee('A');
       otherAttendee = await MongoDB.Attendees.insertRandomAttendee('B');
-      
+
       await api.get('/attendees')
         .auth(ApiServer.AdminUsername, ApiServer.AdminPassword)
         .end()
@@ -314,14 +314,14 @@ describe('Attendees resource', () => {
       assert.strictEqual(thisAttendee.id, otherAttendee.attendeeid);
       assert.strictEqual(thisAttendee.links.self, `/attendees/${encodeURIComponent(otherAttendee.attendeeid)}`);
     });
-    
+
     after(async () => {
       await MongoDB.Teams.removeByTeamId(attendee.attendeeid),
       await MongoDB.Users.removeByUserId(otherAttendee.attendeeid)
     });
 
   });
-  
+
   describe('GET attendees with incorrect auth', () => {
 
     let statusCode: number;
@@ -366,7 +366,7 @@ describe('Attendees resource', () => {
 
     before(async () => {
       attendee = await MongoDB.Attendees.insertRandomAttendee();
-      
+
       await api.delete(`/attendees/${encodeURIComponent(attendee.attendeeid)}`)
         .auth(ApiServer.AdminUsername, ApiServer.AdminPassword)
         .end()
@@ -390,7 +390,7 @@ describe('Attendees resource', () => {
     it('should return no body', () => {
       assert.strictEqual(body, '');
     });
-    
+
     it('should have deleted the attendee', () => {
       assert.strictEqual(deletedAttendee, null);
     });
@@ -442,7 +442,7 @@ describe('Attendees resource', () => {
 
     before(async () => {
       attendee = MongoDB.Attendees.createRandomAttendee();
-      
+
       await api.delete(`/attendees/${encodeURIComponent(attendee.attendeeid)}`)
         .auth('sack', 'boy')
         .end()
@@ -469,5 +469,5 @@ describe('Attendees resource', () => {
     });
 
   });
-  
+
 });
