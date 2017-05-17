@@ -534,6 +534,7 @@ describe('Users resource', () => {
   describe('POST new user', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let user: User
     let createdUser: User
     let statusCode: number
@@ -542,7 +543,7 @@ describe('Users resource', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       user = MongoDB.Users.createRandomUser()
 
       const requestDoc: UserResource.TopLevelDocument = {
@@ -615,6 +616,7 @@ describe('Users resource', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
       MongoDB.Users.removeByUserId(user.userid),
 
@@ -626,13 +628,14 @@ describe('Users resource', () => {
   describe('POST user with existing ID', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let user: User
     let statusCode: number
     let contentType: string
     let response: JSONApi.TopLevelDocument
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       user = await MongoDB.Users.insertRandomUser()
 
       const requestDoc: UserResource.TopLevelDocument = {
@@ -672,6 +675,7 @@ describe('Users resource', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
       MongoDB.Users.removeByUserId(user.userid),
     ]))
