@@ -9,16 +9,7 @@ import AdminAuthStrategy from './plugins/admin-auth-strategy'
 import AttendeeAuthStrategy from './plugins/attendee-auth-strategy'
 import OverrideResponseType from './plugins/override-response-type'
 
-import AttendeesRoute from './routes/attendees'
-import TeamsRoute from './routes/teams'
-import UsersRoute from './routes/users'
-import RootRoute from './routes/root'
-import ChallengesRoute from './routes/challenges'
-import HacksRoute from './routes/hacks'
-import HackChallengesRoute from './routes/hack-challenges'
-import TeamMembersRoute from './routes/team-members'
-import TeamEntriesRoute from './routes/team-entries'
-import HealthCheckRoute from './routes/health-check'
+import Routes from './routes'
 
 import EventBroadcaster from './eventbroadcaster'
 import Config from './config'
@@ -90,18 +81,7 @@ export default class Server {
       },
     ]
 
-    this.routes = [
-      RootRoute,
-      AttendeesRoute,
-      UsersRoute,
-      TeamsRoute,
-      TeamMembersRoute,
-      TeamEntriesRoute,
-      ChallengesRoute,
-      HacksRoute,
-      HackChallengesRoute,
-      HealthCheckRoute,
-    ]
+    this.routes = Routes
   }
 
   public async start() {

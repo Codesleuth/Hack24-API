@@ -1,7 +1,8 @@
 import { Request, IReply } from 'hapi'
-import { HackModel, TeamModel, UserModel } from '../../models'
-import { JSONApi, HackResource, HacksResource, TeamResource, UserResource } from '../../../resources'
+import { HackModel } from '../../models'
+import { HackResource, HacksResource, TeamResource, UserResource } from '../../../resources'
 import { createEscapedRegex } from '../../utils'
+import { teamModelToResourceObject, userModelToResourceObject } from '../../responses'
 
 export default async function handler(req: Request, reply: IReply) {
   const query: { name?: RegExp } = {}

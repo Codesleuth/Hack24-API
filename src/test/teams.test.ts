@@ -13,7 +13,7 @@ import { SlackApi } from './utils/slackapi'
 import { Random } from './utils/random'
 import { Events } from './events'
 
-describe.only('Teams resource', () => {
+describe('Teams resource', () => {
 
   let api: request.SuperTest<request.Test>
 

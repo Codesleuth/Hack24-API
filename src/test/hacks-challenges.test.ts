@@ -3,13 +3,15 @@ import { MongoDB } from './utils/mongodb'
 import { Hack } from './models/hacks'
 import { Challenge } from './models/challenges'
 import { Attendee } from './models/attendees'
+import { User } from './models/users'
+import { Team } from './models/teams'
 import { ApiServer } from './utils/apiserver'
 import * as request from 'supertest'
 import { JSONApi, HackChallengesRelationship, ChallengeResource } from '../resources'
 import { PusherListener } from './utils/pusherlistener'
 import { Random } from './utils/random'
 
-describe('Hack Entries relationship', () => {
+describe('Hack Challenges relationship', () => {
 
   let api: request.SuperTest<request.Test>
 
@@ -162,6 +164,8 @@ describe('Hack Entries relationship', () => {
   describe('DELETE multiple hack challenges', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
+    let team: Team
     let firstChallenge: Challenge
     let secondChallenge: Challenge
     let thirdChallenge: Challenge
@@ -173,13 +177,13 @@ describe('Hack Entries relationship', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
-
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam([ attendeeUser._id ])
       firstChallenge = await MongoDB.Challenges.insertRandomChallenge('A')
       secondChallenge = await MongoDB.Challenges.insertRandomChallenge('B')
       thirdChallenge = await MongoDB.Challenges.insertRandomChallenge('C')
 
-      hack = MongoDB.Hacks.createRandomHack()
+      hack = MongoDB.Hacks.createRandomHack({ team: team._id })
       hack.challenges = [firstChallenge._id, secondChallenge._id, thirdChallenge._id]
       await MongoDB.Hacks.insertHack(hack)
 
@@ -257,7 +261,9 @@ describe('Hack Entries relationship', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
 
       MongoDB.Challenges.removeByChallengeId(firstChallenge.challengeid),
       MongoDB.Challenges.removeByChallengeId(secondChallenge.challengeid),
@@ -270,9 +276,94 @@ describe('Hack Entries relationship', () => {
 
   })
 
+  describe(`DELETE hack challenge when not in the hack's team`, () => {
+
+    let attendee: Attendee
+    let attendeeUser: User
+    let team: Team
+    let challenge: Challenge
+    let hack: Hack
+    let modifiedHack: Hack
+    let statusCode: number
+    let contentType: string
+    let response: HackChallengesRelationship.TopLevelDocument
+    let pusherListener: PusherListener
+
+    before(async () => {
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam()
+      challenge = await MongoDB.Challenges.insertRandomChallenge()
+
+      hack = MongoDB.Hacks.createRandomHack({ team: team._id })
+      hack.challenges = [challenge._id]
+      await MongoDB.Hacks.insertHack(hack)
+
+      const req: HackChallengesRelationship.TopLevelDocument = {
+        data: [{
+          type: 'challenges',
+          id: challenge.challengeid,
+        }],
+      }
+
+      pusherListener = await PusherListener.Create(ApiServer.PusherPort)
+
+      const res = await api.delete(`/hacks/${hack.hackid}/challenges`)
+        .auth(attendee.attendeeid, ApiServer.HackbotPassword)
+        .type('application/vnd.api+json')
+        .send(req)
+        .end()
+
+      statusCode = res.status
+      contentType = res.header['content-type']
+      response = res.body
+
+      modifiedHack = await MongoDB.Hacks.findByHackId(hack.hackid)
+      await pusherListener.waitForEvents(2)
+    })
+
+    it('should respond with status code 403 Forbidden', () => {
+      assert.strictEqual(statusCode, 403)
+    })
+
+    it('should return application/vnd.api+json content with charset utf-8', () => {
+      assert.strictEqual(contentType, 'application/vnd.api+json; charset=utf-8')
+    })
+
+    it('should return the expected error', () => {
+      assert.strictEqual(response.errors.length, 1)
+      assert.strictEqual(response.errors[0].status, '403')
+      assert.strictEqual(response.errors[0].title, 'Forbidden')
+      assert.strictEqual(response.errors[0].detail, 'Only team members can add a challenge to a hack')
+    })
+
+    it('should not modify the hack', () => {
+      assert.strictEqual(modifiedHack.challenges.length, 1)
+      assert.strictEqual(modifiedHack.challenges[0].equals(challenge._id), true)
+    })
+
+    it('should not send any events to Pusher', () => {
+      assert.strictEqual(pusherListener.events.length, 0)
+    })
+
+    after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
+      MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
+
+      MongoDB.Challenges.removeByChallengeId(challenge.challengeid),
+
+      MongoDB.Hacks.removeByHackId(hack.hackid),
+
+      pusherListener.close(),
+    ]))
+
+  })
+
   describe("DELETE hack challenges which don't exist", () => {
 
     let attendee: Attendee
+    let attendeeUser: User
+    let team: Team
     let challenge: Challenge
     let hack: Hack
     let modifiedHack: Hack
@@ -282,10 +373,11 @@ describe('Hack Entries relationship', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
-
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam([ attendeeUser._id ])
       challenge = await MongoDB.Challenges.insertRandomChallenge()
-      hack = MongoDB.Hacks.createRandomHack()
+
+      hack = MongoDB.Hacks.createRandomHack({ team: team._id })
       hack.challenges = [challenge._id]
       await MongoDB.Hacks.insertHack(hack)
 
@@ -340,9 +432,13 @@ describe('Hack Entries relationship', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
+
       MongoDB.Challenges.removeByChallengeId(challenge.challengeid),
       MongoDB.Hacks.removeByHackId(hack.hackid),
+
       pusherListener.close(),
     ]))
 
@@ -351,6 +447,8 @@ describe('Hack Entries relationship', () => {
   describe('POST hack challenges', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
+    let team: Team
     let challenge: Challenge
     let firstNewChallenge: Challenge
     let secondNewChallenge: Challenge
@@ -362,13 +460,13 @@ describe('Hack Entries relationship', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
-
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam([ attendeeUser._id ])
       challenge = await MongoDB.Challenges.insertRandomChallenge('A')
       firstNewChallenge = await MongoDB.Challenges.insertRandomChallenge('B')
       secondNewChallenge = await MongoDB.Challenges.insertRandomChallenge('C')
 
-      hack = MongoDB.Hacks.createRandomHack()
+      hack = MongoDB.Hacks.createRandomHack({ team: team._id })
       hack.challenges = [challenge._id]
       await MongoDB.Hacks.insertHack(hack)
 
@@ -448,7 +546,9 @@ describe('Hack Entries relationship', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
 
       MongoDB.Challenges.removeByChallengeId(challenge.challengeid),
       MongoDB.Challenges.removeByChallengeId(firstNewChallenge.challengeid),
@@ -461,9 +561,92 @@ describe('Hack Entries relationship', () => {
 
   })
 
+  describe(`POST hack challenge when not in the hack's team`, () => {
+
+    let attendee: Attendee
+    let attendeeUser: User
+    let team: Team
+    let challenge: Challenge
+    let hack: Hack
+    let modifiedHack: Hack
+    let statusCode: number
+    let contentType: string
+    let response: HackChallengesRelationship.TopLevelDocument
+    let pusherListener: PusherListener
+
+    before(async () => {
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam()
+      challenge = await MongoDB.Challenges.insertRandomChallenge('B')
+
+      hack = MongoDB.Hacks.createRandomHack({ team: team._id })
+      await MongoDB.Hacks.insertHack(hack)
+
+      const req: HackChallengesRelationship.TopLevelDocument = {
+        data: [{
+          type: 'challenges',
+          id: challenge.challengeid,
+        }],
+      }
+
+      pusherListener = await PusherListener.Create(ApiServer.PusherPort)
+
+      const res = await api.post(`/hacks/${hack.hackid}/challenges`)
+        .auth(attendee.attendeeid, ApiServer.HackbotPassword)
+        .type('application/vnd.api+json')
+        .send(req)
+        .end()
+
+      statusCode = res.status
+      contentType = res.header['content-type']
+      response = res.body
+
+      modifiedHack = await MongoDB.Hacks.findByHackId(hack.hackid)
+      await pusherListener.waitForEvent()
+    })
+
+    it('should respond with status code 403 Forbidden', () => {
+      assert.strictEqual(statusCode, 403)
+    })
+
+    it('should return application/vnd.api+json content with charset utf-8', () => {
+      assert.strictEqual(contentType, 'application/vnd.api+json; charset=utf-8')
+    })
+
+    it('should return the expected error', () => {
+      assert.strictEqual(response.errors.length, 1)
+      assert.strictEqual(response.errors[0].status, '403')
+      assert.strictEqual(response.errors[0].title, 'Forbidden')
+      assert.strictEqual(response.errors[0].detail, 'Only team members can add a challenge to a hack')
+    })
+
+    it('should not modify the hack', () => {
+      assert.strictEqual(modifiedHack.challenges.length, 0)
+    })
+
+    it('should not send any events to Pusher', () => {
+      assert.strictEqual(pusherListener.events.length, 0)
+    })
+
+    after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
+      MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
+
+      MongoDB.Challenges.removeByChallengeId(challenge.challengeid),
+
+      MongoDB.Hacks.removeByHackId(hack.hackid),
+
+      pusherListener.close(),
+    ]))
+
+  })
+
   describe('POST hack challenges already in a hack', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
+    let team: Team
     let challenge: Challenge
     let otherChallenge: Challenge
     let hack: Hack
@@ -475,15 +658,16 @@ describe('Hack Entries relationship', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam([ attendeeUser._id ])
 
       challenge = await MongoDB.Challenges.insertRandomChallenge()
       otherChallenge = await MongoDB.Challenges.insertRandomChallenge()
 
-      hack = await MongoDB.Hacks.createRandomHack()
+      hack = await MongoDB.Hacks.createRandomHack({ team: team._id })
       hack.challenges = [challenge._id]
       await MongoDB.Hacks.insertHack(hack)
-      otherHack = await MongoDB.Hacks.createRandomHack()
+      otherHack = await MongoDB.Hacks.createRandomHack({ team: team._id })
       otherHack.challenges = [otherChallenge._id]
       await MongoDB.Hacks.insertHack(otherHack)
 
@@ -535,7 +719,9 @@ describe('Hack Entries relationship', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
 
       MongoDB.Challenges.removeByChallengeId(challenge.challengeid),
       MongoDB.Challenges.removeByChallengeId(otherChallenge.challengeid),
@@ -551,6 +737,8 @@ describe('Hack Entries relationship', () => {
   describe('POST hack challenges which do not exist', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
+    let team: Team
     let hack: Hack
     let modifiedHack: Hack
     let statusCode: number
@@ -559,9 +747,10 @@ describe('Hack Entries relationship', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam([ attendeeUser._id ])
 
-      hack = await MongoDB.Hacks.insertRandomHack()
+      hack = await MongoDB.Hacks.insertRandomHack({ team: team._id })
 
       const req: HackChallengesRelationship.TopLevelDocument = {
         data: [{
@@ -610,7 +799,10 @@ describe('Hack Entries relationship', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
+
       MongoDB.Hacks.removeByHackId(hack.hackid),
 
       pusherListener.close(),

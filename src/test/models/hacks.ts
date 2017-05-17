@@ -56,13 +56,14 @@ export class Hacks {
     })
   }
 
-  public createRandomHack(prefix?: string, team?: ObjectID): Hack {
-    prefix = prefix || ''
+  public createRandomHack(options?: { prefix?: string, team?: ObjectID }): Hack {
+    options = options || {}
+    options.prefix = options.prefix || ''
     const randomPart = Random.str(5)
     return {
-      hackid: `random-hack-${prefix}${randomPart}`,
-      name: `Random Hack ${prefix}${randomPart}`,
-      team,
+      hackid: `random-hack-${options.prefix}${randomPart}`,
+      name: `Random Hack ${options.prefix}${randomPart}`,
+      team: options.team,
       challenges: [],
     }
   }
@@ -82,7 +83,7 @@ export class Hacks {
       throw new Error('Must provide a team when creating a hack')
     }
 
-    const randomHack = this.createRandomHack(options.prefix, options.team)
+    const randomHack = this.createRandomHack(options)
     return new Promise<Hack>((resolve, reject) => {
       this._collection.insertOne(randomHack).then((result) => {
         randomHack._id = result.insertedId

@@ -1,5 +1,5 @@
-import { HackModel, TeamModel, UserModel } from './models'
-import { JSONApi, HackResource, HacksResource, TeamResource, UserResource } from '../resources'
+import { TeamModel, UserModel } from './models'
+import { JSONApi, TeamResource, UserResource } from '../resources'
 
 export function teamModelToResourceObject(team: TeamModel) {
   return {

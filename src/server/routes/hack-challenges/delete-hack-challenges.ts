@@ -3,18 +3,41 @@ import { HackModel } from '../../models'
 import { HackChallengesRelationship } from '../../../resources'
 import EventBroadcaster from '../../eventbroadcaster'
 import * as Boom from 'boom'
+import { Credentials } from '../../plugins/attendee-auth-strategy'
 
 export default async function handler(req: Request, reply: IReply) {
   const { hackId: hackid } = req.params
   const requestDoc: HackChallengesRelationship.TopLevelDocument = req.payload
+  const credentials: Credentials = req.auth.credentials
 
-  const hack = await HackModel
-    .findOne({ hackid }, 'hackid name challenges')
-    .populate('challenges', 'challengeid name')
+  const hacks = await HackModel
+    .find({ hackid })
+    .select('_id hackid name challenges team')
+    .populate({
+      path: 'challenges',
+      select: 'challengeid name',
+    })
+    .populate({
+      path: 'team',
+      select: 'members',
+      populate: {
+        path: 'members',
+        match: { _id: credentials.user._id },
+        select: 'userid',
+        options: { limit: 1 },
+      },
+    })
     .exec()
 
-  if (hack === null) {
+  if (hacks.length === 0) {
     reply(Boom.notFound('Hack not found'))
+    return
+  }
+
+  const hack = hacks[0]
+
+  if (hack.team.members.length < 1) {
+    reply(Boom.forbidden('Only team members can add a challenge to a hack'))
     return
   }
 
