@@ -252,6 +252,12 @@ declare module "@slack/client" {
     logLevel?: string
     logger?: (logLevel: string, logString: string) => void
     slackAPIUrl?: string
+    retryConfig: {
+      retries?: number
+      factor?: number
+      minTimeout?: number
+      maxTimeout?: number
+    }
   }
 
   interface BaseAPIClient {

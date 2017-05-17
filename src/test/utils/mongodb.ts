@@ -1,5 +1,5 @@
 import { MongoClient, Db } from 'mongodb'
-import { Users } from '../models/users'
+import { Users, User } from '../models/users'
 import { Teams } from '../models/teams'
 import { Hacks } from '../models/hacks'
 import { Challenges } from '../models/challenges'
@@ -15,6 +15,18 @@ export class MongoDB {
       throw new Error(`Unable to connect to MongoDB - ${err.message}`)
     }
     await this.prepareDb(db)
+  }
+
+  public static async createAttendeeAndUser() {
+    const attendee = await MongoDB.Attendees.insertRandomAttendee({ withSlackId: true })
+    const user = {
+      userid: attendee.slackid,
+      name: `User for attendee ${attendee.attendeeid}`,
+      modified: new Date(),
+    } as User
+    user._id = await MongoDB.Users.insertUser(user)
+
+    return { attendee, user }
   }
 
   private static _db: Db

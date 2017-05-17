@@ -47,6 +47,12 @@ export default class Server {
 
     this.slack = new WebClient(Config.slack.token, Config.slack.apiUrl ? {
       slackAPIUrl: Config.slack.apiUrl,
+      retryConfig: Config.production ? null : {
+        minTimeout: 0,
+        maxTimeout: 1,
+        retries: 0,
+        factor: 1,
+      },
     } : undefined)
 
     this.server = new Hapi.Server()
@@ -78,7 +84,7 @@ export default class Server {
       {
         register: HapiPino,
         options: {
-          prettyPrint: Config.node_env === 'dev',
+          prettyPrint: ['dev', 'test'].indexOf(Config.node_env) > -1,
           instance: this.pino,
         },
       },

@@ -47,7 +47,7 @@ export class Users {
 
   public createRandomUser(prefix?: string): User {
     prefix = prefix || ''
-    const randomPart = Random.str(5)
+    const randomPart = Random.str(8 - prefix.length).toUpperCase()
     return {
       userid: `U${prefix}${randomPart}`,
       name: `Random user ${prefix}${randomPart}`,

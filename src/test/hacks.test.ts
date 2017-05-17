@@ -3,9 +3,10 @@ import { MongoDB } from './utils/mongodb'
 import { Team } from './models/teams'
 import { Hack } from './models/hacks'
 import { Attendee } from './models/attendees'
+import { User } from './models/users'
 import { ApiServer } from './utils/apiserver'
 import * as request from 'supertest'
-import { JSONApi, HacksResource, HackResource } from '../resources'
+import { JSONApi, HacksResource, HackResource, TeamResource, UserResource } from '../resources'
 import { PusherListener } from './utils/pusherlistener'
 import { SlackApi } from './utils/slackapi'
 import { Random } from './utils/random'
@@ -20,7 +21,9 @@ describe('Hacks resource', () => {
 
   describe('POST new hack', () => {
 
+    let team: Team
     let attendee: Attendee
+    let user: User
     let hack: Hack
     let createdHack: Hack
     let statusCode: number
@@ -29,7 +32,8 @@ describe('Hacks resource', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam([user._id])
       hack = MongoDB.Hacks.createRandomHack()
 
       const hackRequest: HackResource.TopLevelDocument = {
@@ -37,6 +41,11 @@ describe('Hacks resource', () => {
           type: 'hacks',
           attributes: {
             name: hack.name,
+          },
+          relationships: {
+            team: {
+              data: { type: 'teams', id: team.teamid },
+            },
           },
         },
       }
@@ -85,6 +94,7 @@ describe('Hacks resource', () => {
       assert.ok(createdHack, 'Hack not found')
       assert.strictEqual(createdHack.hackid, hack.hackid)
       assert.strictEqual(createdHack.name, hack.name)
+      assert.ok(createdHack.team.equals(team._id), 'Created hack team ID does not match')
     })
 
     it('should send a hacks_add event to Pusher', () => {
@@ -98,13 +108,81 @@ describe('Hacks resource', () => {
 
       const data = JSON.parse(event.payload.data)
       assert.strictEqual(data.name, hack.name)
+      assert.strictEqual(data.team.teamid, team.teamid)
+      assert.strictEqual(data.team.name, team.name)
+      assert.strictEqual(data.team.motto, team.motto)
     })
 
     after(() => Promise.all([
       MongoDB.Hacks.removeByHackId(hack.hackid),
-      MongoDB.Hacks.removeByHackId(hack.hackid),
+      MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Users.removeByUserId(user.userid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
 
       pusherListener.close(),
+    ]))
+
+  })
+
+  describe('POST new hack when not a team member', () => {
+
+    let team: Team
+    let attendee: Attendee
+    let user: User
+    let hack: Hack
+    let statusCode: number
+    let contentType: string
+    let response: HackResource.TopLevelDocument
+
+    before(async () => {
+      ({ attendee, user } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam()
+      hack = MongoDB.Hacks.createRandomHack()
+
+      const hackRequest: HackResource.TopLevelDocument = {
+        data: {
+          type: 'hacks',
+          attributes: {
+            name: hack.name,
+          },
+          relationships: {
+            team: {
+              data: { type: 'teams', id: team.teamid },
+            },
+          },
+        },
+      }
+
+      const res = await api.post('/hacks')
+        .auth(attendee.attendeeid, ApiServer.HackbotPassword)
+        .type('application/vnd.api+json')
+        .send(hackRequest)
+        .end()
+
+      statusCode = res.status
+      contentType = res.header['content-type']
+      response = res.body
+    })
+
+    it('should respond with status code 403 Forbidden', () => {
+      assert.strictEqual(statusCode, 403)
+    })
+
+    it('should return application/vnd.api+json content with charset utf-8', () => {
+      assert.strictEqual(contentType, 'application/vnd.api+json; charset=utf-8')
+    })
+
+    it('should return an error with status code 403 and the expected title', () => {
+      assert.strictEqual(response.errors.length, 1)
+      assert.strictEqual(response.errors[0].status, '403')
+      assert.strictEqual(response.errors[0].title, 'Forbidden')
+      assert.strictEqual(response.errors[0].detail, 'Only team members can create a hack')
+    })
+
+    after(() => Promise.all([
+      MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Users.removeByUserId(user.userid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
     ]))
 
   })
@@ -112,20 +190,28 @@ describe('Hacks resource', () => {
   describe('POST hack which already exists', () => {
 
     let attendee: Attendee
+    let user: User
     let hack: Hack
+    let team: Team
     let statusCode: number
     let contentType: string
     let response: JSONApi.TopLevelDocument
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
-      hack = await MongoDB.Hacks.insertRandomHack()
+      ({ attendee, user } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam([user._id])
+      hack = await MongoDB.Hacks.insertRandomHack({ team: team._id })
 
       const hackRequest: HackResource.TopLevelDocument = {
         data: {
           type: 'hacks',
           attributes: {
             name: hack.name,
+          },
+          relationships: {
+            team: {
+              data: { type: 'teams', id: team.teamid },
+            },
           },
         },
       }
@@ -158,6 +244,7 @@ describe('Hacks resource', () => {
 
     after(() => Promise.all([
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Users.removeByUserId(user.userid),
       MongoDB.Hacks.removeByHackId(hack.hackid),
     ]))
 
@@ -165,47 +252,29 @@ describe('Hacks resource', () => {
 
   describe('POST hack with incorrect authentication', () => {
 
-    let createdHack: Hack
     let statusCode: number
     let contentType: string
     let authenticateHeader: string
     let response: JSONApi.TopLevelDocument
     let slackApi: SlackApi
-    let pusherListener: PusherListener
 
     before(async () => {
-      const hack = MongoDB.Hacks.createRandomHack()
-
-      const hackRequest: HackResource.TopLevelDocument = {
-        data: {
-          type: 'hacks',
-          attributes: {
-            name: hack.name,
-          },
-        },
-      }
-
       slackApi = await SlackApi.Create(ApiServer.SlackApiPort, ApiServer.SlackApiBasePath)
       slackApi.UsersList = {
         ok: false,
         error: 'user_not_found',
       }
 
-      pusherListener = await PusherListener.Create(ApiServer.PusherPort)
-
       const res = await api.post('/hacks')
         .auth('U12345678', ApiServer.HackbotPassword)
         .type('application/vnd.api+json')
-        .send(hackRequest)
+        .send({})
         .end()
 
       statusCode = res.status
       contentType = res.header['content-type']
       authenticateHeader = res.header['www-authenticate']
       response = res.body
-
-      createdHack = await MongoDB.Hacks.findByHackId(hack.hackid)
-      await pusherListener.waitForEvent()
     })
 
     it('should respond with status code 401 Unauthorised', () => {
@@ -227,18 +296,7 @@ describe('Hacks resource', () => {
       assert.strictEqual(response.errors[0].detail, 'Bad username or password')
     })
 
-    it('should not create the hack document', () => {
-      assert.strictEqual(createdHack, null)
-    })
-
-    it('should not send an event to Pusher', () => {
-      assert.strictEqual(pusherListener.events.length, 0)
-    })
-
-    after(() => Promise.all([
-      slackApi.close(),
-      pusherListener.close(),
-    ]))
+    after(() => slackApi.close())
   })
 
   describe('OPTIONS hacks', () => {
@@ -296,6 +354,10 @@ describe('Hacks resource', () => {
   describe('GET hacks', () => {
 
     let origin: string
+    let firstUser: User
+    let secondUser: User
+    let firstTeam: Team
+    let secondTeam: Team
     let firstHack: Hack
     let secondHack: Hack
     let statusCode: number
@@ -309,8 +371,14 @@ describe('Hacks resource', () => {
 
       origin = Random.str()
 
-      firstHack = await MongoDB.Hacks.insertRandomHack('A')
-      secondHack = await MongoDB.Hacks.insertRandomHack('B')
+      firstUser = await MongoDB.Users.insertRandomUser()
+      secondUser = await MongoDB.Users.insertRandomUser()
+
+      firstTeam = await MongoDB.Teams.insertRandomTeam([firstUser._id])
+      secondTeam = await MongoDB.Teams.insertRandomTeam([secondUser._id])
+
+      firstHack = await MongoDB.Hacks.insertRandomHack({ prefix: 'A', team: firstTeam._id })
+      secondHack = await MongoDB.Hacks.insertRandomHack({ prefix: 'B', team: secondTeam._id })
 
       const res = await api.get('/hacks')
         .set('Origin', origin)
@@ -346,6 +414,9 @@ describe('Hacks resource', () => {
       assert.strictEqual(hackResponse.type, 'hacks')
       assert.strictEqual(hackResponse.id, firstHack.hackid)
       assert.strictEqual(hackResponse.attributes.name, firstHack.name)
+
+      assert.strictEqual(hackResponse.relationships.team.data.id, firstTeam.teamid)
+      assert.strictEqual(hackResponse.relationships.team.data.type, 'teams')
     })
 
     it('should return the second hack', () => {
@@ -354,9 +425,53 @@ describe('Hacks resource', () => {
       assert.strictEqual(hackResponse.type, 'hacks')
       assert.strictEqual(hackResponse.id, secondHack.hackid)
       assert.strictEqual(hackResponse.attributes.name, secondHack.name)
+
+      assert.strictEqual(hackResponse.relationships.team.data.id, secondTeam.teamid)
+      assert.strictEqual(hackResponse.relationships.team.data.type, 'teams')
+    })
+
+    it('should include each team and their members', () => {
+      assert.strictEqual(response.included.length, 4)
+
+      const firstIncludedTeam = response.included.find((o) => o.type === 'teams' && o.id === firstTeam.teamid) as TeamResource.ResourceObject
+      const secondIncludedTeam = response.included.find((o) => o.type === 'teams' && o.id === secondTeam.teamid) as TeamResource.ResourceObject
+      const firstIncludedUser = response.included.find((o) => o.type === 'users' && o.id === firstUser.userid) as UserResource.ResourceObject
+      const secondIncludedUser = response.included.find((o) => o.type === 'users' && o.id === secondUser.userid) as UserResource.ResourceObject
+
+      assert.strictEqual(firstIncludedTeam.links.self, `/teams/${firstTeam.teamid}`)
+      assert.strictEqual(firstIncludedTeam.id, firstTeam.teamid)
+      assert.strictEqual(firstIncludedTeam.type, 'teams')
+      assert.strictEqual(firstIncludedTeam.attributes.name, firstTeam.name)
+      assert.strictEqual(firstIncludedTeam.attributes.motto, firstTeam.motto)
+      assert.strictEqual(firstIncludedTeam.relationships.members.data.length, 1)
+      assert.strictEqual(firstIncludedTeam.relationships.members.data[0].id, firstUser.userid)
+      assert.strictEqual(firstIncludedTeam.relationships.members.data[0].type, 'users')
+
+      assert.strictEqual(secondIncludedTeam.links.self, `/teams/${secondTeam.teamid}`)
+      assert.strictEqual(secondIncludedTeam.id, secondTeam.teamid)
+      assert.strictEqual(secondIncludedTeam.type, 'teams')
+      assert.strictEqual(secondIncludedTeam.attributes.name, secondTeam.name)
+      assert.strictEqual(secondIncludedTeam.attributes.motto, secondTeam.motto)
+      assert.strictEqual(secondIncludedTeam.relationships.members.data.length, 1)
+      assert.strictEqual(secondIncludedTeam.relationships.members.data[0].id, secondUser.userid)
+      assert.strictEqual(secondIncludedTeam.relationships.members.data[0].type, 'users')
+
+      assert.strictEqual(firstIncludedUser.links.self, `/users/${firstUser.userid}`)
+      assert.strictEqual(firstIncludedUser.id, firstUser.userid)
+      assert.strictEqual(firstIncludedUser.type, 'users')
+      assert.strictEqual(firstIncludedUser.attributes.name, firstUser.name)
+
+      assert.strictEqual(secondIncludedUser.links.self, `/users/${secondUser.userid}`)
+      assert.strictEqual(secondIncludedUser.id, secondUser.userid)
+      assert.strictEqual(secondIncludedUser.type, 'users')
+      assert.strictEqual(secondIncludedUser.attributes.name, secondUser.name)
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(firstUser.userid),
+      MongoDB.Users.removeByUserId(secondUser.userid),
+      MongoDB.Teams.removeByTeamId(firstTeam.teamid),
+      MongoDB.Teams.removeByTeamId(secondTeam.teamid),
       MongoDB.Hacks.removeByHackId(firstHack.hackid),
       MongoDB.Hacks.removeByHackId(secondHack.hackid),
     ]))
@@ -420,6 +535,7 @@ describe('Hacks resource', () => {
   describe('GET hack by slug (hackid)', () => {
 
     let origin: string
+    let team: Team
     let hack: Hack
     let statusCode: number
     let contentType: string
@@ -430,7 +546,8 @@ describe('Hacks resource', () => {
     before(async () => {
       origin = Random.str()
 
-      hack = await MongoDB.Hacks.insertRandomHack()
+      team = await MongoDB.Teams.insertRandomTeam()
+      hack = await MongoDB.Hacks.insertRandomHack({ team: team._id })
 
       const res = await api.get(`/hacks/${hack.hackid}`)
         .set('Origin', origin)
@@ -467,7 +584,10 @@ describe('Hacks resource', () => {
       assert.strictEqual(response.data.attributes.name, hack.name)
     })
 
-    after(() => MongoDB.Hacks.removeByHackId(hack.hackid))
+    after(() => Promise.all([
+      MongoDB.Hacks.removeByHackId(hack.hackid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
+    ]))
 
   })
 
@@ -519,6 +639,7 @@ describe('Hacks resource', () => {
   describe('GET hacks by filter', () => {
 
     let origin: string
+    let team: Team
     let firstHack: Hack
     let secondHack: Hack
     let thirdHack: Hack
@@ -533,9 +654,11 @@ describe('Hacks resource', () => {
 
       origin = Random.str()
 
-      firstHack = await MongoDB.Hacks.insertRandomHack('ABCD')
-      secondHack = await MongoDB.Hacks.insertRandomHack('ABEF')
-      thirdHack = await MongoDB.Hacks.insertRandomHack('ABCE')
+      team = await MongoDB.Teams.insertRandomTeam()
+
+      firstHack = await MongoDB.Hacks.insertRandomHack({ prefix: 'ABCD', team: team._id })
+      secondHack = await MongoDB.Hacks.insertRandomHack({ prefix: 'ABEF', team: team._id })
+      thirdHack = await MongoDB.Hacks.insertRandomHack({ prefix: 'ABCE', team: team._id })
 
       const res = await api.get('/hacks?filter[name]=ABC')
         .set('Origin', origin)
@@ -586,6 +709,19 @@ describe('Hacks resource', () => {
       assert.strictEqual(hackResponse.attributes.name, thirdHack.name)
     })
 
+    it('should include the team', () => {
+      assert.strictEqual(response.included.length, 1)
+
+      const includedTeam = response.included.find((o) => o.type === 'teams' && o.id === team.teamid) as TeamResource.ResourceObject
+
+      assert.strictEqual(includedTeam.links.self, `/teams/${team.teamid}`)
+      assert.strictEqual(includedTeam.id, team.teamid)
+      assert.strictEqual(includedTeam.type, 'teams')
+      assert.strictEqual(includedTeam.attributes.name, team.name)
+      assert.strictEqual(includedTeam.attributes.motto, team.motto)
+      assert.strictEqual(includedTeam.relationships.members.data.length, 0)
+    })
+
     after(() => Promise.all([
       MongoDB.Hacks.removeByHackId(firstHack.hackid),
       MongoDB.Hacks.removeByHackId(secondHack.hackid),
@@ -597,6 +733,8 @@ describe('Hacks resource', () => {
   describe('DELETE hack', () => {
 
     let attendee: Attendee
+    let user: User
+    let team: Team
     let hack: Hack
     let deletedHack: Hack
     let statusCode: number
@@ -604,8 +742,9 @@ describe('Hacks resource', () => {
     let body: string
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
-      hack = await MongoDB.Hacks.insertRandomHack()
+      ({ attendee, user } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam([user._id])
+      hack = await MongoDB.Hacks.insertRandomHack({ team: team._id })
 
       const res = await api.delete(`/hacks/${encodeURIComponent(hack.hackid)}`)
         .auth(attendee.attendeeid, ApiServer.HackbotPassword)
@@ -635,15 +774,18 @@ describe('Hacks resource', () => {
     })
 
     after(() => Promise.all([
-      MongoDB.Hacks.removeByHackId(hack.hackid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Users.removeByUserId(user.userid),
+      MongoDB.Teams.removeByTeamId(team.teamid),
+      MongoDB.Hacks.removeByHackId(hack.hackid),
     ]))
 
   })
 
-  describe('DELETE hack entered into a team', () => {
+  describe('DELETE hack when not a member of the team', () => {
 
     let attendee: Attendee
+    let user: User
     let hack: Hack
     let team: Team
     let deletedHack: Hack
@@ -652,11 +794,9 @@ describe('Hacks resource', () => {
     let response: JSONApi.TopLevelDocument
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
-      hack = await MongoDB.Hacks.insertRandomHack()
-      team = MongoDB.Teams.createRandomTeam()
-      team.entries = [hack._id]
-      await MongoDB.Teams.insertTeam(team)
+      ({ attendee, user } = await MongoDB.createAttendeeAndUser())
+      team = await MongoDB.Teams.insertRandomTeam()
+      hack = await MongoDB.Hacks.insertRandomHack({ team: team._id })
 
       const res = await api.delete(`/hacks/${encodeURIComponent(hack.hackid)}`)
         .auth(attendee.attendeeid, ApiServer.HackbotPassword)
@@ -669,19 +809,19 @@ describe('Hacks resource', () => {
       deletedHack = await MongoDB.Hacks.findByHackId(hack.hackid)
     })
 
-    it('should respond with status code 400 Bad Request', () => {
-      assert.strictEqual(statusCode, 400)
+    it('should respond with status code 403 Forbidden', () => {
+      assert.strictEqual(statusCode, 403)
     })
 
     it('should return application/vnd.api+json content with charset utf-8', () => {
       assert.strictEqual(contentType, 'application/vnd.api+json; charset=utf-8')
     })
 
-    it('should respond with the expected "Hack is entered into a team" error', () => {
+    it('should respond with the expected "Only team members can delete a hack" error', () => {
       assert.strictEqual(response.errors.length, 1)
-      assert.strictEqual(response.errors[0].status, '400')
-      assert.strictEqual(response.errors[0].title, 'Bad Request')
-      assert.strictEqual(response.errors[0].detail, 'Hack is entered into a team')
+      assert.strictEqual(response.errors[0].status, '403')
+      assert.strictEqual(response.errors[0].title, 'Forbidden')
+      assert.strictEqual(response.errors[0].detail, 'Only team members can delete a hack')
     })
 
     it('should not delete the hack', () => {
@@ -736,15 +876,13 @@ describe('Hacks resource', () => {
 
   describe('DELETE hack with incorrect auth', () => {
 
-    let hack: Hack
-    let deletedHack: Hack
     let statusCode: number
     let contentType: string
     let authenticateHeader: string
     let response: JSONApi.TopLevelDocument
 
     before(async () => {
-      hack = await MongoDB.Hacks.insertRandomHack()
+      const hack = MongoDB.Hacks.createRandomHack()
 
       const res = await api.delete(`/hacks/${encodeURIComponent(hack.hackid)}`)
         .auth('sack', 'boy')
@@ -754,8 +892,6 @@ describe('Hacks resource', () => {
       contentType = res.header['content-type']
       authenticateHeader = res.header['www-authenticate']
       response = res.body
-
-      deletedHack = await MongoDB.Hacks.findByHackId(hack.hackid)
     })
 
     it('should respond with status code 401 Unauthorised', () => {
@@ -776,13 +912,6 @@ describe('Hacks resource', () => {
       assert.strictEqual(response.errors[0].title, 'Unauthorized')
       assert.strictEqual(response.errors[0].detail, 'Bad username or password')
     })
-
-    it('should not delete the hack', () => {
-      assert.strictEqual(deletedHack.hackid, hack.hackid)
-    })
-
-    after(() => MongoDB.Hacks.removeByHackId(hack.hackid))
-
   })
 
 })

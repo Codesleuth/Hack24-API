@@ -1,7 +1,7 @@
 import { Request, IReply } from 'hapi'
 import * as Boom from 'boom'
 import { TeamModel } from '../../models'
-import { TeamResource, UserResource, HackResource } from '../../../resources'
+import { TeamResource, UserResource } from '../../../resources'
 
 export default async function handler(req: Request, reply: IReply) {
   const teamId = req.params.teamId
@@ -34,28 +34,6 @@ export default async function handler(req: Request, reply: IReply) {
     attributes: { name: user.name },
   }))
 
-  const includedHacks = team.entries.map((hack): HackResource.ResourceObject => ({
-    links: { self: `/hacks/${hack.hackid}` },
-    type: 'hacks',
-    id: hack.hackid,
-    attributes: { name: hack.name },
-    relationships: {
-      challenges: {
-        links: { self: `/hacks/${encodeURIComponent(hack.hackid)}/challenges` },
-        data: hack.challenges.map((challenge) => ({ type: 'challenges', id: challenge.challengeid })),
-      },
-    },
-  }))
-
-  const includedChallenges = [].concat(...team.entries.map((hack) => (
-    hack.challenges.map((challenge) => ({
-      links: { self: `/challenges/${challenge.challengeid}` },
-      type: 'challenges',
-      id: challenge.challengeid,
-      attributes: { name: challenge.name },
-    }))
-  )))
-
   const result: TeamResource.TopLevelDocument = {
     links: { self: `/teams/${encodeURIComponent(team.teamid)}` },
     data: {
@@ -70,13 +48,9 @@ export default async function handler(req: Request, reply: IReply) {
           links: { self: `/teams/${encodeURIComponent(team.teamid)}/members` },
           data: team.members.map((member) => ({ type: 'users', id: member.userid })),
         },
-        entries: {
-          links: { self: `/teams/${encodeURIComponent(team.teamid)}/entries` },
-          data: team.entries.map((hack) => ({ type: 'hacks', id: hack.hackid })),
-        },
       },
     },
-    included: [...includedUsers, ...includedHacks, ...includedChallenges],
+    included: [...includedUsers],
   }
 
   reply(result)

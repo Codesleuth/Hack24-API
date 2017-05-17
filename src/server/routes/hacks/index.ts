@@ -19,13 +19,21 @@ const register: PluginRegister = (server, _, next) => {
         validate: {
           payload: Joi.object().keys({
             data: Joi.object().keys({
-              id: Joi.string(),
-              type: Joi.only('hacks'),
+              id: Joi.string().forbidden(),
+              type: Joi.only('hacks').required(),
               attributes: Joi.object().keys({
                 name: Joi.string(),
-              }),
-            }),
-          }),
+              }).required(),
+              relationships: Joi.object().keys({
+                team: Joi.object().keys({
+                  data: Joi.object().keys({
+                    id: Joi.string().required(),
+                    type: Joi.only('teams').required(),
+                  }).required(),
+                }).required(),
+              }).required(),
+            }).required(),
+          }).required(),
         },
       },
     }, {

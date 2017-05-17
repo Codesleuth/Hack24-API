@@ -1,9 +1,9 @@
-import {Schema, model, Document} from 'mongoose'
+import { Schema, model, Document } from 'mongoose'
 
 export interface User {
   userid: string
   name: string
-  modified: Date
+  modified?: Date
 }
 
 export interface UserModel extends User, Document { }
@@ -20,24 +20,24 @@ export interface Team {
   name: string
   motto: string
   members: UserModel[]
-  entries: HackModel[]
 }
 
 export interface TeamModel extends Team, Document { }
 
 export const TeamSchema = new Schema({
   teamid: { type: String, unique: true, required: true },
-  name: { type: String, unique : true, required : true },
+  name: { type: String, unique: true, required: true },
   motto: { type: String, required: false },
   modified: { type: Date, default: Date.now },
-  members : [{ type: Schema.Types.ObjectId, ref: 'User' }],
-  entries : [{ type: Schema.Types.ObjectId, ref: 'Hack' }],
+  members: [{ type: Schema.Types.ObjectId, ref: 'User' }],
 })
 export const TeamModel = model<TeamModel>('Team', TeamSchema)
 
 export interface Hack {
   hackid: string
   name: string
+  modified?: Date
+  team: TeamModel,
   challenges: ChallengeModel[]
 }
 
@@ -45,22 +45,24 @@ export interface HackModel extends Hack, Document { }
 
 export const HackSchema = new Schema({
   hackid: { type: String, unique: true, required: true },
-  name: { type: String, unique : true, required : true },
+  name: { type: String, unique: true, required: true },
   modified: { type: Date, default: Date.now },
-  challenges : [{ type: Schema.Types.ObjectId, ref: 'Challenge' }],
+  team: { type: Schema.Types.ObjectId, ref: 'Team' },
+  challenges: [{ type: Schema.Types.ObjectId, ref: 'Challenge' }],
 })
 export const HackModel = model<HackModel>('Hack', HackSchema)
 
 export interface Challenge {
   challengeid: string
   name: string
+  modified?: Date
 }
 
 export interface ChallengeModel extends Challenge, Document { }
 
 export const ChallengeSchema = new Schema({
   challengeid: { type: String, unique: true, required: true },
-  name: { type: String, unique : true, required : true },
+  name: { type: String, unique: true, required: true },
   modified: { type: Date, default: Date.now },
 })
 export const ChallengeModel = model<ChallengeModel>('Challenge', ChallengeSchema)
@@ -70,7 +72,7 @@ export interface Attendee {
   slackid: string
 }
 
-interface AttendeeModel extends Attendee, Document { }
+export interface AttendeeModel extends Attendee, Document { }
 
 export const AttendeeSchema = new Schema({
   attendeeid: { type: String, unique: true, required: true },

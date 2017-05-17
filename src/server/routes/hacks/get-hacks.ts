@@ -1,6 +1,6 @@
 import { Request, IReply } from 'hapi'
-import { HackModel } from '../../models'
-import { HackResource, HacksResource } from '../../../resources'
+import { HackModel, TeamModel, UserModel } from '../../models'
+import { JSONApi, HackResource, HacksResource, TeamResource, UserResource } from '../../../resources'
 import { createEscapedRegex } from '../../utils'
 
 export default async function handler(req: Request, reply: IReply) {
@@ -11,8 +11,17 @@ export default async function handler(req: Request, reply: IReply) {
   }
 
   const hacks = await HackModel
-    .find(query, 'hackid name')
+    .find(query)
+    .select('hackid name team')
     .sort({ hackid: 1 })
+    .populate({
+      path: 'team',
+      select: 'teamid name motto members',
+      populate: {
+        path: 'members',
+        select: 'userid name',
+      },
+    })
     .exec()
 
   const hackResponses = hacks.map((hack): HackResource.ResourceObject => ({
@@ -22,12 +31,42 @@ export default async function handler(req: Request, reply: IReply) {
     attributes: {
       name: hack.name,
     },
+    relationships: {
+      team: hack.team && {
+        data: { id: hack.team.teamid, type: 'teams' },
+      },
+    },
   }))
 
-  const hacksResponse: HacksResource.TopLevelDocument = {
+  const includedTeamIds: string[] = []
+  const includedTeams: TeamResource.ResourceObject[] = []
+  const includedUserIds: string[] = []
+  const includedUsers: UserResource.ResourceObject[] = []
+
+  hacks
+    .forEach((hack) => {
+      const team = hack.team
+      if (!team) {
+        return
+      }
+      if (includedTeamIds.indexOf(team.teamid) === -1) {
+        includedTeamIds.push(team.teamid)
+        includedTeams.push(teamModelToResourceObject(team))
+      }
+
+      team.members.forEach((member) => {
+        if (includedUserIds.indexOf(member.userid) === -1) {
+          includedUserIds.push(member.userid)
+          includedUsers.push(userModelToResourceObject(member))
+        }
+      })
+    })
+
+  const hacksResponse = {
     links: { self: `/hacks` },
     data: hackResponses,
-  }
+    included: [...includedTeams, ...includedUsers],
+  } as HacksResource.TopLevelDocument
 
   reply(hacksResponse)
 }

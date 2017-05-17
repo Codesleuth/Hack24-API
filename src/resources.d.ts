@@ -35,9 +35,7 @@ export declare module JSONApi {
     meta?: MetaObject
   }
 
-  export interface RelationshipsDictionary {
-    [index: string]: ToOneRelationshipsObject | ToManyRelationshipsObject
-  }
+  export interface RelationshipsDictionary { }
 
   export interface ResourceObject {
     links?: LinksObject
@@ -154,8 +152,13 @@ export declare module HackResource {
     name?: string
   }
 
+  export interface RelationshipsDictionary extends JSONApi.RelationshipsDictionary {
+    team: JSONApi.ToOneRelationshipsObject
+  }
+
   export interface ResourceObject extends JSONApi.ResourceObject {
     attributes?: AttributesObject
+    relationships?: RelationshipsDictionary
   }
 
   export interface TopLevelDocument extends JSONApi.TopLevelDocument {

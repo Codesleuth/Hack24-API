@@ -63,8 +63,8 @@ export class Attendees {
     })
   }
 
-  public insertRandomAttendee(prefix?: string, withSlackId: boolean = false): Promise<Attendee> {
-    const randomAttendee = this.createRandomAttendee(prefix, withSlackId)
+  public insertRandomAttendee(options: { prefix?: string, withSlackId?: boolean } = { withSlackId: false }): Promise<Attendee> {
+    const randomAttendee = this.createRandomAttendee(options.prefix, options.withSlackId)
     return new Promise<Attendee>((resolve, reject) => {
       this._collection.insertOne(randomAttendee).then((result) => {
         randomAttendee._id = result.insertedId

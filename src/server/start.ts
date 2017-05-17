@@ -4,7 +4,7 @@ import Config from './config'
 
 const pino = Pino({
   prettyPrint: ['dev', 'test'].indexOf(Config.node_env) > -1,
-  level: Config.node_env === 'test' ? 'error' : 'info',
+  // level: Config.node_env === 'test' ? 'error' : 'info',
 })
 
 function warnEnvironment(vars: string[]) {

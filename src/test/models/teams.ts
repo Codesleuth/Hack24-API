@@ -7,7 +7,6 @@ export interface Team {
   name: string
   motto: string
   members: ObjectID[]
-  entries: ObjectID[]
 }
 
 export class Teams {
@@ -65,7 +64,6 @@ export class Teams {
       name: `Random Team ${prefix}${randomPart}`,
       motto: `Random motto ${randomPart}`,
       members: [],
-      entries: [],
     }
   }
 

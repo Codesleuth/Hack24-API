@@ -3,17 +3,17 @@ import { UsersInfoResponse } from '@slack/client'
 import { MongoDB } from './utils/mongodb'
 import { User } from './models/users'
 import { Team } from './models/teams'
-import { Hack } from './models/hacks'
 import { Challenge } from './models/challenges'
 import { Attendee } from './models/attendees'
 import { ApiServer } from './utils/apiserver'
 import * as request from 'supertest'
-import { JSONApi, TeamsResource, TeamResource, UserResource, HackResource, ChallengeResource } from '../resources'
+import { JSONApi, TeamsResource, TeamResource, UserResource } from '../resources'
 import { PusherListener } from './utils/pusherlistener'
 import { SlackApi } from './utils/slackapi'
 import { Random } from './utils/random'
+import { Events } from './events'
 
-describe('Teams resource', () => {
+describe.only('Teams resource', () => {
 
   let api: request.SuperTest<request.Test>
 
@@ -24,6 +24,7 @@ describe('Teams resource', () => {
   describe('POST new team', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let team: Team
     let createdTeam: Team
     let statusCode: number
@@ -32,7 +33,7 @@ describe('Teams resource', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       team = MongoDB.Teams.createRandomTeam()
 
       const teamRequest: TeamResource.TopLevelDocument = {
@@ -69,24 +70,23 @@ describe('Teams resource', () => {
       assert.strictEqual(contentType, 'application/vnd.api+json; charset=utf-8')
     })
 
-    it('should return the team resource object self link', () => {
-      assert.strictEqual(response.links.self, `/teams/${team.teamid}`)
-    })
-
-    it('should return the team type', () => {
+    it('should return the team', () => {
       assert.strictEqual(response.data.type, 'teams')
-    })
-
-    it('should return the team id', () => {
       assert.strictEqual(response.data.id, team.teamid)
-    })
-
-    it('should return the team name', () => {
+      assert.strictEqual(response.data.links.self, `/teams/${team.teamid}`)
       assert.strictEqual(response.data.attributes.name, team.name)
+      assert.strictEqual(response.data.attributes.motto, team.motto)
     })
 
-    it('should return the team motto', () => {
-      assert.strictEqual(response.data.attributes.motto, team.motto)
+    it('should include the attendee member', () => {
+      assert.strictEqual(response.included.length, 1)
+
+      const includedUser = response.included.find((o) => o.type === 'users' && o.id === attendeeUser.userid) as UserResource.ResourceObject
+
+      assert.strictEqual(includedUser.links.self, `/users/${attendeeUser.userid}`)
+      assert.strictEqual(includedUser.id, attendeeUser.userid)
+      assert.strictEqual(includedUser.type, 'users')
+      assert.strictEqual(includedUser.attributes.name, attendeeUser.name)
     })
 
     it('should create the team', () => {
@@ -96,8 +96,9 @@ describe('Teams resource', () => {
       assert.strictEqual(createdTeam.motto, team.motto)
     })
 
-    it('should not add any members to the created team', () => {
-      assert.strictEqual(createdTeam.members.length, 0)
+    it('should add the attendee as a member of the created team', () => {
+      assert.strictEqual(createdTeam.members.length, 1)
+      assert.ok(createdTeam.members[0].equals(attendeeUser._id), 'Team member is not the expected attendee user')
     })
 
     it('should send a teams_add event to Pusher', () => {
@@ -109,31 +110,35 @@ describe('Teams resource', () => {
       assert.strictEqual(event.payload.channels[0], 'api_events')
       assert.strictEqual(event.payload.name, 'teams_add')
 
-      const data = JSON.parse(event.payload.data)
+      const data: Events.TeamCreatedEvent = JSON.parse(event.payload.data)
       assert.strictEqual(data.name, team.name)
       assert.strictEqual(data.motto, team.motto)
-      assert.strictEqual(data.members.length, 0)
+      assert.strictEqual(data.members.length, 1)
+      assert.strictEqual(data.members[0].userid, attendeeUser.userid)
+      assert.strictEqual(data.members[0].name, attendeeUser.name)
     })
 
     after(() => Promise.all([
       MongoDB.Teams.removeByTeamId(team.teamid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
 
       pusherListener.close(),
     ]))
 
   })
 
-  describe('POST new team with slackid', () => {
+  describe('POST new team with Attendee slackid auth', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let team: Team
     let createdTeam: Team
     let statusCode: number
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee('', true)
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       team = MongoDB.Teams.createRandomTeam()
 
       const teamRequest: TeamResource.TopLevelDocument = {
@@ -164,9 +169,14 @@ describe('Teams resource', () => {
       assert.strictEqual(statusCode, 201)
     })
 
+    it('should send a teams_add event to Pusher', () => {
+      assert.strictEqual(pusherListener.events.length, 1)
+    })
+
     after(() => Promise.all([
       MongoDB.Teams.removeByTeamId(team.teamid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
 
       pusherListener.close(),
     ]))
@@ -180,6 +190,79 @@ describe('Teams resource', () => {
     let createdTeam: Team
     let statusCode: number
     let slackApi: SlackApi
+    let pusherListener: PusherListener
+
+    before(async () => {
+      attendee = MongoDB.Attendees.createRandomAttendee()
+      const user = MongoDB.Users.createRandomUser()
+      await MongoDB.Attendees.insertAttendee(attendee)
+      team = MongoDB.Teams.createRandomTeam()
+
+      const teamRequest: TeamResource.TopLevelDocument = {
+        data: {
+          type: 'teams',
+          attributes: {
+            name: team.name,
+            motto: team.motto,
+          },
+        },
+      }
+
+      pusherListener = await PusherListener.Create(ApiServer.PusherPort)
+
+      slackApi = await SlackApi.Create(ApiServer.SlackApiPort, ApiServer.SlackApiBasePath)
+      slackApi.UsersList = {
+        ok: true,
+        user: {
+          id: user.userid,
+          name: user.name,
+          profile: {
+            email: attendee.attendeeid,
+          },
+        },
+      } as UsersInfoResponse
+
+      const res = await api.post('/teams')
+        .auth(user.userid, ApiServer.HackbotPassword)
+        .type('application/vnd.api+json')
+        .send(teamRequest)
+        .end()
+
+      statusCode = res.status
+
+      createdTeam = await MongoDB.Teams.findbyTeamId(team.teamid)
+      await pusherListener.waitForEvent()
+    })
+
+    it('should respond with status code 201 Created', () => {
+      assert.strictEqual(statusCode, 201)
+    })
+
+    it('should send a teams_add event to Pusher', () => {
+      assert.strictEqual(pusherListener.events.length, 1)
+    })
+
+    after(() => Promise.all([
+      MongoDB.Teams.removeByTeamId(team.teamid),
+      MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Users.removeByUserId(attendee.slackid),
+
+      slackApi.close(),
+      pusherListener.close(),
+    ]))
+
+  })
+
+  describe('POST new team with slackid for unregistered attendee', () => {
+
+    let attendee: Attendee
+    let team: Team
+    let createdTeam: Team
+    let slackApi: SlackApi
+    let statusCode: number
+    let contentType: string
+    let authenticateHeader: string
+    let response: TeamResource.TopLevelDocument
     let pusherListener: PusherListener
 
     before(async () => {
@@ -199,71 +282,7 @@ describe('Teams resource', () => {
         },
       }
 
-      slackApi = await SlackApi.Create(ApiServer.SlackApiPort, ApiServer.SlackApiBasePath)
-      slackApi.UsersList = {
-        ok: true,
-        user: {
-          id: slackid,
-          profile: {
-            email: attendee.attendeeid,
-          },
-        },
-      } as UsersInfoResponse
-
       pusherListener = await PusherListener.Create(ApiServer.PusherPort)
-
-      const res = await api.post('/teams')
-        .auth(slackid, ApiServer.HackbotPassword)
-        .type('application/vnd.api+json')
-        .send(teamRequest)
-        .end()
-
-      statusCode = res.status
-
-      createdTeam = await MongoDB.Teams.findbyTeamId(team.teamid)
-    })
-
-    it('should respond with status code 201 Created', () => {
-      assert.strictEqual(statusCode, 201)
-    })
-
-    after(() => Promise.all([
-      MongoDB.Teams.removeByTeamId(team.teamid),
-      MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
-
-      slackApi.close(),
-      pusherListener.close(),
-    ]))
-
-  })
-
-  describe('POST new team with slackid for unregistered attendee', () => {
-
-    let attendee: Attendee
-    let team: Team
-    let createdTeam: Team
-    let slackApi: SlackApi
-    let statusCode: number
-    let contentType: string
-    let authenticateHeader: string
-    let response: TeamResource.TopLevelDocument
-
-    before(async () => {
-      attendee = MongoDB.Attendees.createRandomAttendee('', true)
-      const slackid = attendee.slackid
-      attendee.slackid = undefined
-      await MongoDB.Attendees.insertAttendee(attendee)
-      team = MongoDB.Teams.createRandomTeam()
-
-      const teamRequest: TeamResource.TopLevelDocument = {
-        data: {
-          type: 'teams',
-          attributes: {
-            name: team.name,
-            motto: team.motto,
-          },
-        },
-      }
 
       slackApi = await SlackApi.Create(ApiServer.SlackApiPort, ApiServer.SlackApiBasePath)
       slackApi.UsersList = {
@@ -288,6 +307,7 @@ describe('Teams resource', () => {
       response = res.body
 
       createdTeam = await MongoDB.Teams.findbyTeamId(team.teamid)
+      await pusherListener.waitForEvent()
     })
 
     it('should respond with status code 401 Unauthorised', () => {
@@ -309,11 +329,16 @@ describe('Teams resource', () => {
       assert.strictEqual(response.errors[0].detail, 'Bad username or password')
     })
 
+    it('should not send an event to Pusher', () => {
+      assert.strictEqual(pusherListener.events.length, 0)
+    })
+
     after(() => Promise.all([
       MongoDB.Teams.removeByTeamId(team.teamid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
 
       slackApi.close(),
+      pusherListener.close(),
     ]))
 
   })
@@ -321,6 +346,7 @@ describe('Teams resource', () => {
   describe('POST new team without motto', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let team: Team
     let createdTeam: Team
     let statusCode: number
@@ -329,7 +355,7 @@ describe('Teams resource', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       team = MongoDB.Teams.createRandomTeam()
 
       pusherListener = await PusherListener.Create(ApiServer.PusherPort)
@@ -374,7 +400,8 @@ describe('Teams resource', () => {
       assert.strictEqual(createdTeam.teamid, team.teamid)
       assert.strictEqual(createdTeam.name, team.name)
       assert.strictEqual(createdTeam.motto, null)
-      assert.strictEqual(createdTeam.members.length, 0)
+      assert.strictEqual(createdTeam.members.length, 1)
+      assert.ok(createdTeam.members[0].equals(attendeeUser._id), 'Team member is not the expected attendee user')
     })
 
     it('should send a teams_add event to Pusher', () => {
@@ -389,22 +416,26 @@ describe('Teams resource', () => {
       const data = JSON.parse(event.payload.data)
       assert.strictEqual(data.name, team.name)
       assert.strictEqual(data.motto, null)
-      assert.strictEqual(data.members.length, 0)
+      assert.strictEqual(data.members.length, 1)
+      assert.strictEqual(data.members[0].userid, attendeeUser.userid)
+      assert.strictEqual(data.members[0].name, attendeeUser.name)
     })
 
     after(() => Promise.all([
       MongoDB.Teams.removeByTeamId(team.teamid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
+
       pusherListener.close(),
     ]))
 
   })
 
-  describe('POST new team with members and hacks', () => {
+  describe('POST new team with members', () => {
 
     let attendee: Attendee
-    let user: User
-    let hack: Hack
+    let attendeeUser: User
+    let otherUser: User
     let team: Team
     let createdTeam: Team
     let statusCode: number
@@ -413,9 +444,8 @@ describe('Teams resource', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
-      user = await MongoDB.Users.insertRandomUser()
-      hack = await MongoDB.Hacks.insertRandomHack()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
+      otherUser = await MongoDB.Users.insertRandomUser()
       team = await MongoDB.Teams.createRandomTeam()
 
       pusherListener = await PusherListener.Create(ApiServer.PusherPort)
@@ -429,10 +459,7 @@ describe('Teams resource', () => {
           },
           relationships: {
             members: {
-              data: [{ type: 'users', id: user.userid }],
-            },
-            entries: {
-              data: [{ type: 'hacks', id: hack.hackid }],
+              data: [{ type: 'users', id: otherUser.userid }],
             },
           },
         },
@@ -461,22 +488,10 @@ describe('Teams resource', () => {
     })
 
     it('should return the team resource object self link', () => {
-      assert.strictEqual(response.links.self, `/teams/${team.teamid}`)
-    })
-
-    it('should return the team type', () => {
       assert.strictEqual(response.data.type, 'teams')
-    })
-
-    it('should return the team id', () => {
       assert.strictEqual(response.data.id, team.teamid)
-    })
-
-    it('should return the team name', () => {
+      assert.strictEqual(response.data.links.self, `/teams/${team.teamid}`)
       assert.strictEqual(response.data.attributes.name, team.name)
-    })
-
-    it('should return the team motto', () => {
       assert.strictEqual(response.data.attributes.motto, team.motto)
     })
 
@@ -487,14 +502,14 @@ describe('Teams resource', () => {
       assert.strictEqual(createdTeam.motto, team.motto)
     })
 
-    it('should add the member to the created team', () => {
-      assert.strictEqual(createdTeam.members.length, 1)
-      assert.strictEqual(createdTeam.members[0].equals(user._id), true)
-    })
+    it('should add the attendee and other user member to the created team', () => {
+      assert.strictEqual(createdTeam.members.length, 2)
 
-    it('should add the hack to the created team', () => {
-      assert.strictEqual(createdTeam.entries.length, 1)
-      assert.strictEqual(createdTeam.entries[0].equals(hack._id), true)
+      const attendeeMember = createdTeam.members.find((member) => member.equals(attendeeUser._id))
+      const otherUserMember = createdTeam.members.find((member) => member.equals(otherUser._id))
+
+      assert.ok(attendeeMember, 'Attendee was not added as a team member')
+      assert.ok(otherUserMember, 'Attendee was not added as a team member')
     })
 
     it('should send a teams_add event to Pusher', () => {
@@ -506,22 +521,23 @@ describe('Teams resource', () => {
       assert.strictEqual(event.payload.channels[0], 'api_events')
       assert.strictEqual(event.payload.name, 'teams_add')
 
-      const data = JSON.parse(event.payload.data)
+      const data: Events.TeamCreatedEvent = JSON.parse(event.payload.data)
       assert.strictEqual(data.name, team.name)
       assert.strictEqual(data.motto, team.motto)
 
-      assert.strictEqual(data.members.length, 1)
-      assert.strictEqual(data.members[0].userid, user.userid)
-      assert.strictEqual(data.members[0].name, user.name)
+      assert.strictEqual(data.members.length, 2)
 
-      assert.strictEqual(data.entries.length, 1)
-      assert.strictEqual(data.entries[0].hackid, hack.hackid)
-      assert.strictEqual(data.entries[0].name, hack.name)
+      const attendeeMember = data.members.find((member) => member.userid === attendeeUser.userid)
+      const otherUserMember = data.members.find((member) => member.userid === otherUser.userid)
+
+      assert.strictEqual(attendeeMember.name, attendeeUser.name)
+      assert.strictEqual(otherUserMember.name, otherUser.name)
     })
 
     after(() => Promise.all([
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
-      MongoDB.Users.removeByUserId(user.userid),
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
+      MongoDB.Users.removeByUserId(otherUser.userid),
       MongoDB.Teams.removeByTeamId(team.teamid),
 
       pusherListener.close(),
@@ -532,6 +548,7 @@ describe('Teams resource', () => {
   describe('POST team which already exists', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let team: Team
     let statusCode: number
     let contentType: string
@@ -539,7 +556,7 @@ describe('Teams resource', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       team = await MongoDB.Teams.insertRandomTeam()
 
       const teamRequest: TeamResource.TopLevelDocument = {
@@ -587,8 +604,10 @@ describe('Teams resource', () => {
     })
 
     after(() => Promise.all([
-      MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
       MongoDB.Teams.removeByTeamId(team.teamid),
+      MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
+
       pusherListener.close(),
     ]))
 
@@ -719,14 +738,9 @@ describe('Teams resource', () => {
   describe('GET teams', () => {
 
     let origin: string
-    let firstChallenge: Challenge
-    let secondChallenge: Challenge
     let firstUser: User
     let secondUser: User
     let thirdUser: User
-    let firstHack: Hack
-    let secondHack: Hack
-    let thirdHack: Hack
     let firstTeam: Team
     let secondTeam: Team
     let statusCode: number
@@ -740,30 +754,17 @@ describe('Teams resource', () => {
 
       origin = Random.str()
 
-      firstChallenge = await MongoDB.Challenges.insertRandomChallenge('A')
-      secondChallenge = await MongoDB.Challenges.insertRandomChallenge('B')
-
       firstUser = await MongoDB.Users.insertRandomUser('A')
       secondUser = await MongoDB.Users.insertRandomUser('B')
       thirdUser = await MongoDB.Users.insertRandomUser('C')
 
-      firstHack = MongoDB.Hacks.createRandomHack('A')
-      firstHack.challenges = [firstChallenge._id]
-      await MongoDB.Hacks.insertHack(firstHack)
-      secondHack = await MongoDB.Hacks.insertRandomHack('B')
-      thirdHack = MongoDB.Hacks.createRandomHack('C')
-      thirdHack.challenges = [secondChallenge._id]
-      await MongoDB.Hacks.insertHack(thirdHack)
-
       firstTeam = MongoDB.Teams.createRandomTeam('A')
       firstTeam.members = [firstUser._id]
-      firstTeam.entries = [firstHack._id]
       delete firstTeam.motto
       await MongoDB.Teams.insertTeam(firstTeam)
 
       secondTeam = await MongoDB.Teams.createRandomTeam('B')
       secondTeam.members = [secondUser._id, thirdUser._id]
-      secondTeam.entries = [secondHack._id, thirdHack._id]
       await MongoDB.Teams.insertTeam(secondTeam)
 
       const res = await api.get('/teams')
@@ -805,10 +806,6 @@ describe('Teams resource', () => {
       assert.strictEqual(teamResponse.relationships.members.data.length, 1)
       assert.strictEqual(teamResponse.relationships.members.data[0].type, 'users')
       assert.strictEqual(teamResponse.relationships.members.data[0].id, firstUser.userid)
-
-      assert.strictEqual(teamResponse.relationships.entries.data.length, 1)
-      assert.strictEqual(teamResponse.relationships.entries.data[0].type, 'hacks')
-      assert.strictEqual(teamResponse.relationships.entries.data[0].id, firstHack.hackid)
     })
 
     it('should return the second team', () => {
@@ -825,20 +822,11 @@ describe('Teams resource', () => {
 
       assert.strictEqual(teamResponse.relationships.members.data[1].type, 'users')
       assert.strictEqual(teamResponse.relationships.members.data[1].id, thirdUser.userid)
-
-      assert.strictEqual(teamResponse.relationships.entries.data.length, 2)
-      assert.strictEqual(teamResponse.relationships.entries.data[0].type, 'hacks')
-      assert.strictEqual(teamResponse.relationships.entries.data[0].id, secondHack.hackid)
-
-      assert.strictEqual(teamResponse.relationships.entries.data[1].type, 'hacks')
-      assert.strictEqual(teamResponse.relationships.entries.data[1].id, thirdHack.hackid)
     })
 
-    it('should include the related members, entries and challenges', () => {
-      assert.strictEqual(response.included.length, 8)
+    it('should include the related members', () => {
+      assert.strictEqual(response.included.length, 3)
       assert.strictEqual(response.included.filter((obj) => obj.type === 'users').length, 3)
-      assert.strictEqual(response.included.filter((obj) => obj.type === 'hacks').length, 3)
-      assert.strictEqual(response.included.filter((obj) => obj.type === 'challenges').length, 2)
     })
 
     it('should include each expected users', () => {
@@ -857,53 +845,10 @@ describe('Teams resource', () => {
       assert.strictEqual(users[2].attributes.name, thirdUser.name)
     })
 
-    it('should include each expected hack', () => {
-      const hacks = response.included.filter((doc) => doc.type === 'hacks') as HackResource.ResourceObject[]
-
-      assert.strictEqual(hacks[0].links.self, `/hacks/${firstHack.hackid}`)
-      assert.strictEqual(hacks[0].id, firstHack.hackid)
-      assert.strictEqual(hacks[0].attributes.name, firstHack.name)
-
-      const firstHackChallenges = (hacks[0].relationships['challenges'] as JSONApi.ToManyRelationshipsObject).data
-      assert.strictEqual(firstHackChallenges[0].id, firstChallenge.challengeid)
-      assert.strictEqual(firstHackChallenges[0].type, 'challenges')
-
-      assert.strictEqual(hacks[1].links.self, `/hacks/${secondHack.hackid}`)
-      assert.strictEqual(hacks[1].id, secondHack.hackid)
-      assert.strictEqual(hacks[1].attributes.name, secondHack.name)
-
-      assert.strictEqual(hacks[2].links.self, `/hacks/${thirdHack.hackid}`)
-      assert.strictEqual(hacks[2].id, thirdHack.hackid)
-      assert.strictEqual(hacks[2].attributes.name, thirdHack.name)
-
-      const secondHackChallenges = (hacks[2].relationships['challenges'] as JSONApi.ToManyRelationshipsObject).data
-      assert.strictEqual(secondHackChallenges[0].id, secondChallenge.challengeid)
-      assert.strictEqual(secondHackChallenges[0].type, 'challenges')
-    })
-
-    it('should include each expected challenge from hacks', () => {
-      const challenges = response.included.filter((doc) => doc.type === 'challenges') as ChallengeResource.ResourceObject[]
-
-      assert.strictEqual(challenges[0].links.self, `/challenges/${firstChallenge.challengeid}`)
-      assert.strictEqual(challenges[0].id, firstChallenge.challengeid)
-      assert.strictEqual(challenges[0].attributes.name, firstChallenge.name)
-
-      assert.strictEqual(challenges[1].links.self, `/challenges/${secondChallenge.challengeid}`)
-      assert.strictEqual(challenges[1].id, secondChallenge.challengeid)
-      assert.strictEqual(challenges[1].attributes.name, secondChallenge.name)
-    })
-
     after(() => Promise.all([
-      MongoDB.Challenges.removeByChallengeId(firstChallenge.challengeid),
-      MongoDB.Challenges.removeByChallengeId(secondChallenge.challengeid),
-
       MongoDB.Users.removeByUserId(firstUser.userid),
       MongoDB.Users.removeByUserId(secondUser.userid),
       MongoDB.Users.removeByUserId(thirdUser.userid),
-
-      MongoDB.Hacks.removeByHackId(firstHack.hackid),
-      MongoDB.Hacks.removeByHackId(secondHack.hackid),
-      MongoDB.Hacks.removeByHackId(thirdHack.hackid),
 
       MongoDB.Teams.removeByTeamId(firstTeam.teamid),
       MongoDB.Teams.removeByTeamId(secondTeam.teamid),
@@ -971,8 +916,6 @@ describe('Teams resource', () => {
     let challenge: Challenge
     let firstUser: User
     let secondUser: User
-    let firstHack: Hack
-    let secondHack: Hack
     let team: Team
     let statusCode: number
     let contentType: string
@@ -988,14 +931,8 @@ describe('Teams resource', () => {
       firstUser = await MongoDB.Users.insertRandomUser('A')
       secondUser = await MongoDB.Users.insertRandomUser('B')
 
-      firstHack = MongoDB.Hacks.createRandomHack('A')
-      firstHack.challenges = [challenge._id]
-      await MongoDB.Hacks.insertHack(firstHack)
-      secondHack = await MongoDB.Hacks.insertRandomHack('B')
-
       team = MongoDB.Teams.createRandomTeam()
       team.members = [firstUser._id, secondUser._id]
-      team.entries = [firstHack._id, secondHack._id]
       await MongoDB.Teams.insertTeam(team)
 
       const res = await api.get(`/teams/${team.teamid}`)
@@ -1043,17 +980,8 @@ describe('Teams resource', () => {
       assert.strictEqual(users[1].id, secondUser.userid)
     })
 
-    it('should return the hack relationships', () => {
-      const hacks = response.data.relationships.entries.data
-
-      assert.strictEqual(hacks[0].type, 'hacks')
-      assert.strictEqual(hacks[0].id, firstHack.hackid)
-      assert.strictEqual(hacks[1].type, 'hacks')
-      assert.strictEqual(hacks[1].id, secondHack.hackid)
-    })
-
     it('should include the related members, entries and challenges', () => {
-      assert.strictEqual(response.included.length, 5)
+      assert.strictEqual(response.included.length, 2)
 
       const users = response.included.filter((o) => o.type === 'users') as UserResource.ResourceObject[]
       assert.strictEqual(users.length, 2)
@@ -1063,30 +991,12 @@ describe('Teams resource', () => {
       assert.strictEqual(users[1].links.self, `/users/${secondUser.userid}`)
       assert.strictEqual(users[1].id, secondUser.userid)
       assert.strictEqual(users[1].attributes.name, secondUser.name)
-
-      const hacks = response.included.filter((o) => o.type === 'hacks') as HackResource.ResourceObject[]
-      assert.strictEqual(hacks.length, 2)
-      assert.strictEqual(hacks[0].links.self, `/hacks/${firstHack.hackid}`)
-      assert.strictEqual(hacks[0].id, firstHack.hackid)
-      assert.strictEqual(hacks[0].attributes.name, firstHack.name)
-
-      const firstHackChallenges = (hacks[0].relationships['challenges'] as JSONApi.ToManyRelationshipsObject).data
-      assert.strictEqual(firstHackChallenges[0].id, challenge.challengeid)
-      assert.strictEqual(firstHackChallenges[0].type, 'challenges')
-
-      const challenges = response.included.filter((o) => o.type === 'challenges') as ChallengeResource.ResourceObject[]
-      assert.strictEqual(challenges.length, 1)
-      assert.strictEqual(challenges[0].links.self, `/challenges/${challenge.challengeid}`)
-      assert.strictEqual(challenges[0].id, challenge.challengeid)
-      assert.strictEqual(challenges[0].attributes.name, challenge.name)
     })
 
     after(() => Promise.all([
       MongoDB.Challenges.removeByChallengeId(challenge.challengeid),
       MongoDB.Users.removeByUserId(firstUser.userid),
       MongoDB.Users.removeByUserId(secondUser.userid),
-      MongoDB.Hacks.removeByHackId(firstHack.hackid),
-      MongoDB.Hacks.removeByHackId(secondHack.hackid),
       MongoDB.Teams.removeByTeamId(team.teamid),
     ]))
 
@@ -1097,8 +1007,6 @@ describe('Teams resource', () => {
     let origin: string
     let firstUser: User
     let secondUser: User
-    let firstHack: Hack
-    let secondHack: Hack
     let team: Team
     let statusCode: number
     let contentType: string
@@ -1111,12 +1019,9 @@ describe('Teams resource', () => {
 
       firstUser = await MongoDB.Users.insertRandomUser('A')
       secondUser = await MongoDB.Users.insertRandomUser('B')
-      firstHack = await MongoDB.Hacks.insertRandomHack('A')
-      secondHack = await MongoDB.Hacks.insertRandomHack('B')
 
       team = MongoDB.Teams.createRandomTeam()
       team.members = [firstUser._id, secondUser._id]
-      team.entries = [firstHack._id, secondHack._id]
       delete team.motto
 
       await MongoDB.Teams.insertTeam(team)
@@ -1164,15 +1069,8 @@ describe('Teams resource', () => {
       assert.strictEqual(response.data.relationships.members.data[1].id, secondUser.userid)
     })
 
-    it('should return the hack relationships', () => {
-      assert.strictEqual(response.data.relationships.entries.data[0].type, 'hacks')
-      assert.strictEqual(response.data.relationships.entries.data[0].id, firstHack.hackid)
-      assert.strictEqual(response.data.relationships.entries.data[1].type, 'hacks')
-      assert.strictEqual(response.data.relationships.entries.data[1].id, secondHack.hackid)
-    })
-
     it('should include the related members and entries', () => {
-      assert.strictEqual(response.included.length, 4)
+      assert.strictEqual(response.included.length, 2)
 
       const users = response.included.filter((o) => o.type === 'users') as UserResource.ResourceObject[]
       assert.strictEqual(users.length, 2)
@@ -1182,22 +1080,11 @@ describe('Teams resource', () => {
       assert.strictEqual(users[1].links.self, `/users/${secondUser.userid}`)
       assert.strictEqual(users[1].id, secondUser.userid)
       assert.strictEqual(users[1].attributes.name, secondUser.name)
-
-      const hacks = response.included.filter((o) => o.type === 'hacks') as HackResource.ResourceObject[]
-      assert.strictEqual(hacks.length, 2)
-      assert.strictEqual(hacks[0].links.self, `/hacks/${firstHack.hackid}`)
-      assert.strictEqual(hacks[0].id, firstHack.hackid)
-      assert.strictEqual(hacks[0].attributes.name, firstHack.name)
-      assert.strictEqual(hacks[1].links.self, `/hacks/${secondHack.hackid}`)
-      assert.strictEqual(hacks[1].id, secondHack.hackid)
-      assert.strictEqual(hacks[1].attributes.name, secondHack.name)
     })
 
     after(() => Promise.all([
       MongoDB.Users.removeByUserId(firstUser.userid),
       MongoDB.Users.removeByUserId(secondUser.userid),
-      MongoDB.Hacks.removeByHackId(firstHack.hackid),
-      MongoDB.Hacks.removeByHackId(secondHack.hackid),
       MongoDB.Teams.removeByTeamId(team.teamid),
     ]))
 
@@ -1238,6 +1125,7 @@ describe('Teams resource', () => {
   describe('PATCH existing team with name', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let team: Team
     let modifiedTeam: Team
     let statusCode: number
@@ -1246,7 +1134,7 @@ describe('Teams resource', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       team = await MongoDB.Teams.insertRandomTeam()
       const newTeam = MongoDB.Teams.createRandomTeam()
 
@@ -1300,6 +1188,7 @@ describe('Teams resource', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
       MongoDB.Teams.removeByTeamId(team.teamid),
 
@@ -1311,6 +1200,7 @@ describe('Teams resource', () => {
   describe('PATCH existing team without any attributes', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let team: Team
     let modifiedTeam: Team
     let statusCode: number
@@ -1319,7 +1209,7 @@ describe('Teams resource', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       team = await MongoDB.Teams.insertRandomTeam()
 
       const teamRequest: TeamResource.TopLevelDocument = {
@@ -1369,6 +1259,7 @@ describe('Teams resource', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
       MongoDB.Teams.removeByTeamId(team.teamid),
 
@@ -1380,6 +1271,7 @@ describe('Teams resource', () => {
   describe('PATCH existing team with motto', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let team: Team
     let newTeam: Team
     let modifiedTeam: Team
@@ -1389,7 +1281,7 @@ describe('Teams resource', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       team = await MongoDB.Teams.insertRandomTeam()
       newTeam = MongoDB.Teams.createRandomTeam()
 
@@ -1454,6 +1346,7 @@ describe('Teams resource', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
       MongoDB.Teams.removeByTeamId(team.teamid),
 
@@ -1465,6 +1358,7 @@ describe('Teams resource', () => {
   describe('PATCH existing team with same motto', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let team: Team
     let modifiedTeam: Team
     let statusCode: number
@@ -1473,7 +1367,7 @@ describe('Teams resource', () => {
     let pusherListener: PusherListener
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       team = await MongoDB.Teams.insertRandomTeam()
 
       const teamRequest: TeamResource.TopLevelDocument = {
@@ -1526,6 +1420,7 @@ describe('Teams resource', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
       MongoDB.Teams.removeByTeamId(team.teamid),
 
@@ -1616,13 +1511,14 @@ describe('Teams resource', () => {
   describe('DELETE team when no members', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
     let team: Team
     let statusCode: number
     let contentType: string
     let body: string
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
       team = await MongoDB.Teams.insertRandomTeam([], 'ABCD')
 
       const res = await api.delete(`/teams/${team.teamid}`)
@@ -1653,23 +1549,27 @@ describe('Teams resource', () => {
       assert.strictEqual(result, null)
     })
 
-    after(() => MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid))
+    after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
+      MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
+    ]))
 
   })
 
   describe('DELETE team when members', () => {
 
     let attendee: Attendee
+    let attendeeUser: User
+    let otherUser: User
     let team: Team
-    let user: User
     let statusCode: number
     let contentType: string
     let response: JSONApi.TopLevelDocument
 
     before(async () => {
-      attendee = await MongoDB.Attendees.insertRandomAttendee()
-      user = await MongoDB.Users.insertRandomUser('A')
-      team = await MongoDB.Teams.insertRandomTeam([user._id], 'ABCD')
+      ({ attendee, user: attendeeUser } = await MongoDB.createAttendeeAndUser())
+      otherUser = await MongoDB.Users.insertRandomUser('A')
+      team = await MongoDB.Teams.insertRandomTeam([otherUser._id], 'ABCD')
 
       const res = await api.delete(`/teams/${team.teamid}`)
         .auth(attendee.attendeeid, ApiServer.HackbotPassword)
@@ -1703,9 +1603,10 @@ describe('Teams resource', () => {
     })
 
     after(() => Promise.all([
+      MongoDB.Users.removeByUserId(attendeeUser.userid),
       MongoDB.Attendees.removeByAttendeeId(attendee.attendeeid),
       MongoDB.Teams.removeByTeamId(team.teamid),
-      MongoDB.Users.removeByUserId(user.userid),
+      MongoDB.Users.removeByUserId(otherUser.userid),
     ]))
 
   })

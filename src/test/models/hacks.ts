@@ -5,6 +5,7 @@ export interface Hack {
   _id?: ObjectID
   hackid: string
   name: string
+  team: ObjectID
   challenges: ObjectID[]
 }
 
@@ -55,12 +56,13 @@ export class Hacks {
     })
   }
 
-  public createRandomHack(prefix?: string): Hack {
+  public createRandomHack(prefix?: string, team?: ObjectID): Hack {
     prefix = prefix || ''
     const randomPart = Random.str(5)
     return {
       hackid: `random-hack-${prefix}${randomPart}`,
       name: `Random Hack ${prefix}${randomPart}`,
+      team,
       challenges: [],
     }
   }
@@ -75,8 +77,12 @@ export class Hacks {
     })
   }
 
-  public insertRandomHack(prefix?: string): Promise<Hack> {
-    const randomHack = this.createRandomHack(prefix)
+  public insertRandomHack(options: { prefix?: string, team: ObjectID }): Promise<Hack> {
+    if (!options.team) {
+      throw new Error('Must provide a team when creating a hack')
+    }
+
+    const randomHack = this.createRandomHack(options.prefix, options.team)
     return new Promise<Hack>((resolve, reject) => {
       this._collection.insertOne(randomHack).then((result) => {
         randomHack._id = result.insertedId

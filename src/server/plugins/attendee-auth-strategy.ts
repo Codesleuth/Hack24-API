@@ -1,96 +1,190 @@
 import { Request } from 'hapi'
 import { Logger } from 'pino'
-import { WebClient, UsersInfoResponse } from '@slack/client'
+import { WebClient, UsersInfoResponse, User as SlackUser } from '@slack/client'
 import { PluginRegister } from '../../hapi.types'
-import { AttendeeModel } from '../models'
+import { User, UserModel, AttendeeModel, MongoDBErrors } from '../models'
 
 type ValidateFuncCallback = (err: any, isValid?: boolean, credentials?: any) => void
 
-interface CustomOptions {
+interface PluginOptions {
   slack: WebClient,
   password: string,
 }
 
-const slackIdPattern = /U[A-Z0-9]{8}/
-
-async function validateAttendeeByEmailAddress(username: string, log: Logger) {
-  log.info(`Finding attendee with email "${username}"...`)
-
-  const attendees = await AttendeeModel
-    .find({ attendeeid: username }, '_id attendeeid slackid')
-    .limit(1)
-    .exec()
-
-  if (attendees.length === 0) {
-    return null
+export interface Credentials {
+  attendee: {
+    _id: any,
+    attendeeid: string,
   }
-
-  const attendee = attendees[0]
-
-  return {
-    attendeeid: attendee._id,
-    email: attendee.attendeeid,
-    slackid: attendee.slackid,
+  user: {
+    _id: any,
+    userid: string,
+    name: string,
   }
 }
 
-async function validateAttendeeBySlackId(username: string, slack: WebClient, log: Logger) {
+async function getSlackApiUser(slackid: string, slackClient: WebClient) {
+  let slackUser: UsersInfoResponse
+  try {
+    slackUser = await slackClient.users.info(slackid)
+  } catch (err) {
+    throw new Error(`Could not look-up user "${slackid}" on Slack API: ${err.message}`)
+  }
+
+  if (!slackUser.ok) {
+    throw new Error(`Could not look-up user "${slackid}" on Slack API: the response was not OK`)
+  }
+
+  return slackUser.user
+}
+
+async function findOrCreateUser(slackid: string, slackUser: SlackUser, slackClient: WebClient, log: Logger) {
+  const users = await UserModel
+    .find({ userid: slackid })
+    .select('_id userid name')
+    .limit(1)
+    .exec()
+
+  let user = users.length > 0 ? users[0] : null
+
+  if (user) {
+    return user
+  }
+
+  if (!slackUser) {
+    try {
+      slackUser = await getSlackApiUser(slackid, slackClient)
+    } catch (err) {
+      log.warn(err)
+      return null
+    }
+  }
+
+  user = new UserModel({
+    userid: slackUser.id,
+    name: slackUser.name,
+  } as User)
+
+  try {
+    await user.save()
+  } catch (err) {
+    // only possible in a race condition
+    if (err.code !== MongoDBErrors.E11000_DUPLICATE_KEY) {
+      throw new Error(`Unable to save user with userid "${user.userid}"`)
+    }
+  }
+
+  return user
+}
+
+async function getAttendeeBySlackId(slackid: string) {
+  const attendees = await AttendeeModel
+    .find({ slackid: slackid })
+    .select('_id attendeeid slackid')
+    .limit(1)
+    .exec()
+
+  return attendees.length > 0 ? attendees[0] : null
+}
+
+async function getAttendeeByEmail(email: string) {
+  const attendees = await AttendeeModel
+    .find({ attendeeid: email })
+    .select('_id attendeeid slackid')
+    .limit(1)
+    .exec()
+
+  return attendees.length > 0 ? attendees[0] : null
+}
+
+async function validateAttendeeByEmailAddress(username: string, slackClient: WebClient, log: Logger): Promise<Credentials> {
+  log.info(`Finding attendee with email "${username}"...`)
+  const attendee = await getAttendeeByEmail(username)
+
+  if (!attendee) {
+    return null
+  }
+
+  const user = await findOrCreateUser(attendee.slackid, null, slackClient, log)
+
+  if (!user) {
+    return null
+  }
+
+  return {
+    attendee: {
+      _id: attendee._id,
+      attendeeid: attendee.attendeeid,
+    },
+    user: {
+      _id: user._id,
+      userid: user.userid,
+      name: user.name,
+    },
+  }
+}
+
+const slackIdPattern = /U[A-Z0-9]{8}/
+
+async function validateAttendeeBySlackId(username: string, slackClient: WebClient, log: Logger): Promise<Credentials> {
   if (!slackIdPattern.test(username)) {
     log.info(`Invalid slackid: "${username}"`)
     return null
   }
 
   log.info(`Finding attendee with slackid "${username}"...`)
+  let attendee = await getAttendeeBySlackId(username)
 
-  const attendee = await AttendeeModel
-    .findOne({ slackid: username }, '_id attendeeid slackid')
-    .exec()
+  let slackUser: SlackUser
 
-  if (attendee !== null) {
-    log.info(`Found attendee "${username}" to be "${attendee.attendeeid}`)
-    return {
-      attendeeid: attendee._id,
-      email: attendee.attendeeid,
-      slackid: attendee.slackid,
+  if (!attendee) {
+    log.info(`Looking up Slack API user for "${username}"...`)
+
+    try {
+      slackUser = await getSlackApiUser(username, slackClient)
+    } catch (err) {
+      log.warn(err.message)
+      return null
     }
+
+    log.info(`Found slackid "${username}" in Slack API with email "${slackUser.profile.email}"`)
+    attendee = await getAttendeeByEmail(slackUser.profile.email)
+
+    if (!attendee) {
+      log.warn(`Attendee could not be found with email "${slackUser.profile.email}"`)
+      return null
+    }
+
+    log.info(`Found attendee for slackid "${username}" to be "${attendee.attendeeid}"`)
   }
 
-  log.info(`Looking up Slack profile for attendee "${username}"...`)
+  const user = await findOrCreateUser(username, slackUser, slackClient, log)
 
-  let slackUser: UsersInfoResponse
-  try {
-    slackUser = await slack.users.info(username)
-  } catch (err) {
-    log.error(`Could not look-up user "${username}" on Slack API: ${err.message}`)
-    return null
-  }
-
-  log.info(`Found "${username}" to be "${slackUser.user.profile.email}"`)
-
-  const attendeeUpdate = await AttendeeModel
-    .findOneAndUpdate({ attendeeid: slackUser.user.profile.email }, { slackid: slackUser.user.id })
-    .select('_id')
-    .exec()
-
-  if (attendeeUpdate === null) {
+  if (!user) {
     return null
   }
 
   return {
-    attendeeid: attendeeUpdate._id,
-    email: slackUser.user.profile.email,
-    slackid: slackUser.user.id,
+    attendee: {
+      _id: attendee._id,
+      attendeeid: attendee.attendeeid,
+    },
+    user: {
+      _id: user._id,
+      userid: user.userid,
+      name: user.name,
+    },
   }
 }
 
-function validateAttendeeUser(username: string, slack: WebClient, log: Logger) {
+function validateAttendeeUser(username: string, slackClient: WebClient, log: Logger) {
   if (username.indexOf('@') > 0) {
-    return validateAttendeeByEmailAddress(username, log)
+    return validateAttendeeByEmailAddress(username, slackClient, log)
   }
-  return validateAttendeeBySlackId(username, slack, log)
+  return validateAttendeeBySlackId(username, slackClient, log)
 }
 
-const register: PluginRegister = (server, options: CustomOptions, next) => {
+const register: PluginRegister = (server, options: PluginOptions, next) => {
   server.auth.strategy('attendee', 'basic', {
     realm: 'Attendee access',
     validateFunc: (request: Request, username: string, password: string, callback: ValidateFuncCallback) => {
@@ -98,7 +192,7 @@ const register: PluginRegister = (server, options: CustomOptions, next) => {
         return callback(null, false)
       }
       validateAttendeeUser(username, options.slack, request.logger)
-        .then((user) => callback(null, !!user, user || undefined))
+        .then((credentials) => callback(null, !!credentials, credentials || undefined))
         .catch((err) => callback(err))
     },
   })

@@ -1,33 +1,25 @@
 import { Request, IReply } from 'hapi'
-import { Team, UserModel, TeamModel, HackModel, MongoDBErrors } from '../../models'
-import { JSONApi, TeamResource } from '../../../resources'
-import EventBroadcaster from '../../eventbroadcaster'
 import * as Boom from 'boom'
+import { Team, UserModel, TeamModel, MongoDBErrors } from '../../models'
+import { TeamResource } from '../../../resources'
+import EventBroadcaster from '../../eventbroadcaster'
 import { slugify } from '../../utils'
+import { Credentials } from '../../plugins/attendee-auth-strategy'
+import { userModelToResourceObject, teamModelToResourceObject } from '../../responses'
 
 export default async function handler(req: Request, reply: IReply) {
   const requestDoc: TeamResource.TopLevelDocument = req.payload
+  const credentials: Credentials = req.auth.credentials
 
   const relationships = requestDoc.data.relationships
-  let members: JSONApi.ResourceIdentifierObject[] = []
-  let entries: JSONApi.ResourceIdentifierObject[] = []
+  const memberIds: string[] = []
 
-  if (relationships) {
-    if (relationships.members && relationships.members.data) {
-      if (!Array.isArray(relationships.members.data)) {
-        reply(Boom.badRequest())
-        return
-      }
-      members = relationships.members.data
-    }
+  if (relationships && relationships.members && relationships.members.data) {
+    memberIds.push(...relationships.members.data.map((member) => member.id))
+  }
 
-    if (relationships.entries && relationships.entries.data) {
-      if (!Array.isArray(relationships.entries.data)) {
-        reply(Boom.badRequest())
-        return
-      }
-      entries = relationships.entries.data
-    }
+  if (memberIds.indexOf(credentials.user.userid) === -1) {
+    memberIds.push(credentials.user.userid)
   }
 
   const team = new TeamModel({
@@ -35,28 +27,16 @@ export default async function handler(req: Request, reply: IReply) {
     name: requestDoc.data.attributes.name,
     motto: requestDoc.data.attributes.motto || null,
     members: [],
-    entries: [],
   } as Team)
 
   let users: UserModel[] = []
-  let hacks: HackModel[] = []
 
-  if (members.length > 0) {
-    users = await UserModel.find({
-      userid: {
-        $in: members.map((member) => member.id.toString()),
-      },
-    }, '_id userid name').exec()
+  if (memberIds.length > 0) {
+    users = await UserModel
+      .find({ userid: { $in: memberIds } })
+      .select('_id userid name')
+      .exec()
     team.members = users.map((user) => user._id)
-  }
-
-  if (entries.length > 0) {
-    hacks = await HackModel.find({
-      hackid: {
-        $in: entries.map((entry) => entry.id.toString()),
-      },
-    }, '_id hackid name').exec()
-    team.entries = hacks.map((hack) => hack._id)
   }
 
   try {
@@ -70,27 +50,8 @@ export default async function handler(req: Request, reply: IReply) {
   }
 
   const teamResponse: TeamResource.TopLevelDocument = {
-    links: {
-      self: `/teams/${encodeURIComponent(team.teamid)}`,
-    },
-    data: {
-      type: 'teams',
-      id: team.teamid,
-      attributes: {
-        name: team.name,
-        motto: team.motto,
-      },
-      relationships: {
-        members: {
-          links: { self: `/teams/${encodeURIComponent(team.teamid)}/members` },
-          data: users.map((user) => ({ type: 'users', id: user.userid })),
-        },
-        entries: {
-          links: { self: `/teams/${encodeURIComponent(team.teamid)}/entries` },
-          data: hacks.map((hack) => ({ type: 'hacks', id: hack.hackid })),
-        },
-      },
-    },
+    data: teamModelToResourceObject(team),
+    included: users.map(userModelToResourceObject),
   }
 
   const eventBroadcaster: EventBroadcaster = req.server.app.eventBroadcaster
@@ -99,7 +60,6 @@ export default async function handler(req: Request, reply: IReply) {
     name: team.name,
     motto: team.motto,
     members: users.map((user) => ({ userid: user.userid, name: user.name })),
-    entries: hacks.map((hack) => ({ hackid: hack.hackid, name: hack.name })),
   }, req.logger)
 
   reply(teamResponse).code(201)
